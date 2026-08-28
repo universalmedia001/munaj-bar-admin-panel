@@ -15,6 +15,20 @@ export const supabase: SupabaseClient = createClient(
   }
 );
 
+// Isolated client used ONLY to create/verify OTHER users' auth accounts
+// (e.g. admin registering a worker, or the Worker POS login) WITHOUT touching
+// the main client's persisted session. It uses only the public publishable
+// (anon) key — the service-role/secret key is NEVER used in the browser.
+export const createIsolatedAuthClient = (): SupabaseClient =>
+  createClient(supabaseUrl, supabasePublishableKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: `munaj_isolated_auth_${Math.random().toString(36).slice(2)}`,
+    },
+  });
+
 // Helper to get client (alias for compatibility)
 export const getSupabase = (): SupabaseClient => supabase;
 export const isSupabaseConfigured = (): boolean => Boolean(supabaseUrl && supabasePublishableKey);

@@ -10,7 +10,7 @@ export interface AdminUser {
   last_login?: string;
 }
 
-export type WorkerStatus = 'active' | 'offline' | 'on_shift' | 'off_shift';
+export type WorkerStatus = 'active' | 'inactive' | 'offline' | 'on_shift' | 'off_shift';
 export type WorkerRole = 'cashier' | 'worker' | 'bartender' | 'manager';
 
 export interface Worker {
