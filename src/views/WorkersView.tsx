@@ -16,7 +16,10 @@ import {
   Mail, 
   Calendar,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  EyeOff,
+  Copy,
+  KeyRound
 } from 'lucide-react';
 
 export const WorkersView: React.FC = () => {
@@ -33,10 +36,14 @@ export const WorkersView: React.FC = () => {
     name: '',
     email: '',
     phone: '',
+    password: '',
     role: 'cashier' as WorkerRole,
     status: 'active' as WorkerStatus,
   });
   const [formError, setFormError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
 
   const today = new Date().toISOString().split('T')[0];
 
@@ -69,10 +76,12 @@ export const WorkersView: React.FC = () => {
       name: '',
       email: '',
       phone: '',
+      password: '',
       role: 'cashier',
       status: 'active',
     });
     setFormError(null);
+    setShowPassword(false);
     setIsAddModalOpen(true);
   };
 
@@ -82,28 +91,59 @@ export const WorkersView: React.FC = () => {
       name: w.name,
       email: w.email,
       phone: w.phone || '',
+      password: '',
       role: w.role,
       status: w.status,
     });
     setFormError(null);
+    setShowPassword(false);
     setIsAddModalOpen(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.name || !formData.email) {
-      setFormError('Name and Email are required.');
+    setFormError(null);
+
+    // ---- Validation ----
+    if (!formData.name.trim()) {
+      setFormError('Full name cannot be empty.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email.trim())) {
+      setFormError('Please enter a valid email address.');
       return;
     }
 
     if (editingWorker) {
-      const res = await updateWorker(editingWorker.id, formData);
+      setIsSubmitting(true);
+      const res = await updateWorker(editingWorker.id, {
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        role: formData.role,
+        status: formData.status,
+      });
+      setIsSubmitting(false);
       if (!res.success) setFormError(res.error || 'Failed to update worker');
       else setIsAddModalOpen(false);
+      return;
+    }
+
+    // New worker registration requires a login password
+    if (formData.password.length < 8) {
+      setFormError('Password must be at least 8 characters.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    const res = await addWorker(formData);
+    setIsSubmitting(false);
+
+    if (!res.success) {
+      setFormError(res.error || 'Failed to register worker');
     } else {
-      const res = await addWorker(formData);
-      if (!res.success) setFormError(res.error || 'Failed to add worker');
-      else setIsAddModalOpen(false);
+      setIsAddModalOpen(false);
+      setCreatedCredentials({ email: res.email || formData.email, password: formData.password });
     }
   };
 
@@ -305,6 +345,61 @@ export const WorkersView: React.FC = () => {
                 />
               </div>
 
+              {!editingWorker && (
+                <div>
+                  <label className="block font-semibold text-neutral-300 mb-1">Password *</label>
+                  <div className="relative">
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      required
+                      placeholder="Minimum 8 characters"
+                      value={formData.password}
+                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                      className="w-full px-3 py-2 pr-10 bg-neutral-950 border border-neutral-800 rounded-xl text-white focus:outline-none focus:border-emerald-500/70"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((s) => !s)}
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-neutral-500 hover:text-emerald-400 transition"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    <div className="flex-1 h-1 rounded-full bg-neutral-800 overflow-hidden">
+                      <div
+                        className={`h-full transition-all ${
+                          formData.password.length === 0
+                            ? 'w-0'
+                            : formData.password.length < 8
+                            ? 'w-1/3 bg-red-500'
+                            : formData.password.length < 12
+                            ? 'w-2/3 bg-amber-500'
+                            : 'w-full bg-emerald-500'
+                        }`}
+                      />
+                    </div>
+                    <span className={`text-[10px] font-medium ${
+                      formData.password.length === 0
+                        ? 'text-neutral-500'
+                        : formData.password.length < 8
+                        ? 'text-red-400'
+                        : 'text-emerald-400'
+                    }`}>
+                      {formData.password.length === 0
+                        ? 'Set a login password'
+                        : formData.password.length < 8
+                        ? `${8 - formData.password.length} more characters`
+                        : 'Strong enough'}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[10px] text-neutral-500">
+                    The worker uses this email and password to sign into the MUNAJ BAR Worker POS.
+                  </p>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-neutral-300 mb-1">POS Role</label>
@@ -335,14 +430,21 @@ export const WorkersView: React.FC = () => {
               <div className="flex items-center gap-3 pt-3">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition"
+                  disabled={isSubmitting}
+                  className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold rounded-xl transition flex items-center justify-center gap-2"
                 >
-                  {editingWorker ? 'Save Changes' : 'Register Worker'}
+                  {isSubmitting && (
+                    <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  )}
+                  {isSubmitting
+                    ? (editingWorker ? 'Saving...' : 'Creating Worker...')
+                    : (editingWorker ? 'Save Changes' : 'Register Worker')}
                 </button>
                 <button
                   type="button"
+                  disabled={isSubmitting}
                   onClick={() => setIsAddModalOpen(false)}
-                  className="py-2.5 px-4 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 font-semibold rounded-xl transition"
+                  className="py-2.5 px-4 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 text-neutral-300 font-semibold rounded-xl transition"
                 >
                   Cancel
                 </button>
@@ -437,6 +539,70 @@ export const WorkersView: React.FC = () => {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* Worker Created - Credentials Handoff */}
+      {createdCredentials && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
+            <div className="flex flex-col items-center text-center gap-2 mb-5">
+              <div className="w-12 h-12 rounded-full bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+                <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+              </div>
+              <h3 className="text-lg font-bold text-white">Worker Registered</h3>
+              <p className="text-xs text-neutral-400 max-w-xs">
+                A POS login has been created. Share these credentials with the worker &mdash; the
+                password is shown only once.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide text-neutral-500 mb-0.5">Email</p>
+                    <p className="text-sm font-mono text-white truncate">{createdCredentials.email}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard?.writeText(createdCredentials.email)}
+                    className="shrink-0 p-2 text-neutral-400 hover:text-emerald-400 transition"
+                    aria-label="Copy email"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3 bg-neutral-950 border border-neutral-800 rounded-xl">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-[10px] uppercase tracking-wide text-neutral-500 mb-0.5 flex items-center gap-1">
+                      <KeyRound className="w-3 h-3" /> Password
+                    </p>
+                    <p className="text-sm font-mono text-white truncate">{createdCredentials.password}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => navigator.clipboard?.writeText(createdCredentials.password)}
+                    className="shrink-0 p-2 text-neutral-400 hover:text-emerald-400 transition"
+                    aria-label="Copy password"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setCreatedCredentials(null)}
+              className="mt-5 w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition"
+            >
+              Done
+            </button>
           </div>
         </div>
       )}

@@ -14,7 +14,7 @@ import {
   AdminView,
   PaymentMethod
 } from '../types';
-import { supabase, handleSupabaseError } from '../lib/supabase';
+import { supabase, handleSupabaseError, createIsolatedAuthClient } from '../lib/supabase';
 
 interface AdminContextType {
   // Auth state
@@ -64,7 +64,7 @@ interface AdminContextType {
   deleteCategory: (id: string) => Promise<{ success: boolean; error?: string }>;
 
   // Actions - Workers
-  addWorker: (worker: Omit<Worker, 'id' | 'created_at' | 'total_sales_today' | 'transactions_count_today'>) => Promise<{ success: boolean; error?: string }>;
+  addWorker: (worker: Omit<Worker, 'id' | 'created_at' | 'total_sales_today' | 'transactions_count_today'> & { password: string }) => Promise<{ success: boolean; error?: string; email?: string }>;
   updateWorker: (id: string, updates: Partial<Worker>) => Promise<{ success: boolean; error?: string }>;
 
   // Actions - Shifts
@@ -300,7 +300,7 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             email: p.email,
             role: (p.role || 'cashier') as Worker['role'],
             phone: p.phone || undefined,
-            status: 'active',
+            status: (p.status || 'active') as Worker['status'],
             total_sales_today: 0,
             transactions_count_today: 0,
             created_at: p.created_at || new Date().toISOString(),
@@ -844,27 +844,88 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // =========================================================================
   // 7. WORKER & SHIFT ACTIONS (#15, #16)
   // =========================================================================
-  const addWorker = async (workerData: Omit<Worker, 'id' | 'created_at' | 'total_sales_today' | 'transactions_count_today'>): Promise<{ success: boolean; error?: string }> => {
+  const addWorker = async (
+    workerData: Omit<Worker, 'id' | 'created_at' | 'total_sales_today' | 'transactions_count_today'> & { password: string }
+  ): Promise<{ success: boolean; error?: string; email?: string }> => {
     try {
-      // In Supabase, workers can be registered in profiles
-      const { error } = await supabase.from('profiles').insert([{
-        full_name: workerData.name,
-        email: workerData.email,
-        role: workerData.role,
-        phone: workerData.phone || null,
-      }]);
+      const email = (workerData.email || '').trim().toLowerCase();
+      const password = workerData.password || '';
 
-      if (error) {
-        handleSupabaseError('Add Worker', error);
-        return { success: false, error: error.message || 'Unable to register staff member.' };
+      // ---- Server-safe validation (mirrors the form) ----
+      if (!workerData.name?.trim()) return { success: false, error: 'Full name is required.' };
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { success: false, error: 'Please enter a valid email address.' };
+      if (password.length < 8) return { success: false, error: 'Password must be at least 8 characters.' };
+
+      // 1. Create a REAL Supabase Authentication user for the worker.
+      //    We use an ISOLATED client so the admin's own session on the main
+      //    client is never replaced. This uses ONLY the public publishable
+      //    (anon) key — the service-role/secret key is never used in the browser.
+      const authClient = createIsolatedAuthClient();
+      const { data: signUpData, error: signUpError } = await authClient.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { full_name: workerData.name, role: workerData.role },
+        },
+      });
+
+      if (signUpError) {
+        const msg = (signUpError.message || '').toLowerCase();
+        if (msg.includes('already') || msg.includes('registered') || msg.includes('exists')) {
+          return { success: false, error: 'This email address is already registered.' };
+        }
+        handleSupabaseError('Create Worker Auth', signUpError);
+        return { success: false, error: signUpError.message || 'Unable to create the worker login account.' };
       }
 
-      await logActivity('Worker Added', `Registered staff member "${workerData.name}" (${workerData.role})`, 'worker');
+      const authUser = signUpData.user;
+      // Supabase returns a user object with an empty identities array when the
+      // email already belongs to an existing account (no new account created).
+      if (!authUser || (Array.isArray(authUser.identities) && authUser.identities.length === 0)) {
+        return { success: false, error: 'This email address is already registered.' };
+      }
+
+      // 2. Save the worker profile and LINK it to the auth user (auth.users.id -> profiles.id).
+      const baseProfile = {
+        id: authUser.id,
+        email,
+        full_name: workerData.name,
+        role: workerData.role,
+        phone: workerData.phone || null,
+      };
+
+      let { error: profileError } = await supabase
+        .from('profiles')
+        .insert([{ ...baseProfile, status: workerData.status }]);
+
+      // Gracefully support databases whose `profiles` table has no `status` column yet.
+      if (profileError && (profileError.code === 'PGRST204' || /status/i.test(profileError.message || ''))) {
+        const retry = await supabase.from('profiles').insert([baseProfile]);
+        profileError = retry.error;
+      }
+
+      if (profileError) {
+        // Auth user exists but the profile could not be saved. We cannot delete
+        // the auth user from the browser (that needs the service role), so we
+        // surface a clear, actionable error instead of leaving silent drift.
+        handleSupabaseError('Create Worker Profile', profileError);
+        return {
+          success: false,
+          error: `Login was created but saving the worker profile failed (${profileError.message}). Please contact your administrator before retrying.`,
+        };
+      }
+
+      await logActivity(
+        'Worker Registered',
+        `Registered worker "${workerData.name}" (${workerData.role}) with a POS login account`,
+        'worker',
+        authUser.id
+      );
       await refreshData();
-      return { success: true };
+      return { success: true, email };
     } catch (err: any) {
       console.error('Add worker error:', err);
-      return { success: false, error: err.message || 'Failed to add worker.' };
+      return { success: false, error: err.message || 'Failed to register worker.' };
     }
   };
 
@@ -875,8 +936,16 @@ export const AdminProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (updates.email !== undefined) dbUpdates.email = updates.email;
       if (updates.role !== undefined) dbUpdates.role = updates.role;
       if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
+      if (updates.status !== undefined) dbUpdates.status = updates.status;
 
-      const { error } = await supabase.from('profiles').update(dbUpdates).eq('id', id);
+      let { error } = await supabase.from('profiles').update(dbUpdates).eq('id', id);
+
+      // Gracefully support databases whose `profiles` table has no `status` column yet.
+      if (error && (error.code === 'PGRST204' || /status/i.test(error.message || ''))) {
+        const { status, ...withoutStatus } = dbUpdates;
+        const retry = await supabase.from('profiles').update(withoutStatus).eq('id', id);
+        error = retry.error;
+      }
 
       if (error) {
         handleSupabaseError('Update Worker', error);
