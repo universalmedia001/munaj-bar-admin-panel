@@ -1,0 +1,6 @@
+{
+  "name": "MUNAJ BAR Admin Panel",
+  "description": "Production-ready administrative dashboard, inventory control, sales reporting, shift tracker, worker monitor, and POS synchronization for MUNAJ BAR.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
